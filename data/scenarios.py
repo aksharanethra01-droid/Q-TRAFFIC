@@ -24,10 +24,16 @@ def apply_scenario(location, scenario):
     """
     Apply a traffic scenario to a location.
 
+    Parameters:
+        location: Location name such as "Coimbatore"
+        scenario: Scenario name
+
     Returns:
         Modified traffic state and event information.
     """
 
+    # Get the base location using the LOCATION NAME.
+    # Do NOT pass a dictionary here.
     state = get_location_scenario(location)
 
     junctions = state["junctions"]
@@ -47,14 +53,12 @@ def apply_scenario(location, scenario):
 
         event["type"] = "NONE"
 
-
     # --------------------------------------------------
     # SCHOOL PEAK
     # --------------------------------------------------
 
     elif scenario == "School Peak":
 
-        # Increased traffic around selected junctions
         for junction in ["J1", "J2"]:
 
             junctions[junction]["vehicles"] += 15
@@ -63,14 +67,12 @@ def apply_scenario(location, scenario):
 
         event["type"] = "SCHOOL_PEAK"
 
-
     # --------------------------------------------------
     # TEXTILE FESTIVAL
     # --------------------------------------------------
 
     elif scenario == "Textile Festival":
 
-        # Stronger commercial traffic
         for junction in ["J1", "J2", "J3"]:
 
             junctions[junction]["vehicles"] += 20
@@ -79,14 +81,12 @@ def apply_scenario(location, scenario):
 
         event["type"] = "TEXTILE_FESTIVAL"
 
-
     # --------------------------------------------------
     # ACCIDENT
     # --------------------------------------------------
 
     elif scenario == "Accident":
 
-        # Accident occurs at J3
         accident_junction = "J3"
 
         junctions[accident_junction]["vehicles"] += 10
@@ -96,7 +96,6 @@ def apply_scenario(location, scenario):
         event["type"] = "ACCIDENT"
         event["junction"] = accident_junction
         event["severity"] = "HIGH"
-
 
     # --------------------------------------------------
     # VEHICLE OBSTRUCTION
@@ -114,7 +113,6 @@ def apply_scenario(location, scenario):
         event["junction"] = obstruction_junction
         event["severity"] = "MEDIUM"
 
-
     # --------------------------------------------------
     # AMBULANCE EMERGENCY
     # --------------------------------------------------
@@ -124,7 +122,6 @@ def apply_scenario(location, scenario):
         event["type"] = "AMBULANCE"
         event["vehicle"] = "AMB01"
         event["severity"] = "HIGH"
-
         event["start"] = "J1"
         event["destination"] = "J4"
 
@@ -132,6 +129,9 @@ def apply_scenario(location, scenario):
         junctions["J1"]["vehicles"] += 5
         junctions["J1"]["queue"] += 3
 
+    # --------------------------------------------------
+    # INVALID SCENARIO
+    # --------------------------------------------------
 
     else:
 
@@ -139,8 +139,10 @@ def apply_scenario(location, scenario):
             f"Unknown scenario: {scenario}"
         )
 
+    # --------------------------------------------------
+    # SAFETY CLAMP
+    # --------------------------------------------------
 
-    # Prevent unrealistic negative speeds
     for junction in junctions:
 
         if junctions[junction]["speed"] < 5:
@@ -149,6 +151,9 @@ def apply_scenario(location, scenario):
         if junctions[junction]["queue"] < 0:
             junctions[junction]["queue"] = 0
 
+    # --------------------------------------------------
+    # RETURN RESULT
+    # --------------------------------------------------
 
     return {
         "location": location,
@@ -158,6 +163,10 @@ def apply_scenario(location, scenario):
         "event": event
     }
 
+
+# ------------------------------------------------------
+# DIRECT TEST
+# ------------------------------------------------------
 
 if __name__ == "__main__":
 

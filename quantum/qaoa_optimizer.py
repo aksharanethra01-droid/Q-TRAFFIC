@@ -1,530 +1,1423 @@
-"""
-Q-TRAFFIC Quantum QUBO / QAOA Optimizer
+from __future__ import annotations
 
-Quantum-enhanced traffic signal optimization.
-
-Each junction chooses between two signal plans:
-
-    0 -> PLAN_1 : 30 sec green / 30 sec red
-    1 -> PLAN_2 : 45 sec green / 15 sec red
-
-The optimization objective considers:
-
-- Queue length
-- Congestion
-- Emergency priority
-
-QAOA is executed using Qiskit Aer.
-
-This is a quantum-simulation prototype.
-"""
-
+import time
+from dataclasses import asdict, dataclass
+from typing import Dict, Any, Tuple
 
 import numpy as np
 
-from qiskit import QuantumCircuit
-from qiskit_aer import AerSimulator
+try:
+    from qiskit import QuantumCircuit
+    from qiskit.circuit import ParameterVector
+    from qiskit_aer import AerSimulator
+
+    QISKIT_AVAILABLE = True
+
+except Exception:
+    QISKIT_AVAILABLE = False
+
+from quantum.qubo_builder import QUBOModel
 
 
 # ============================================================
-# SIGNAL PLANS
+# RESULT MODEL
 # ============================================================
 
-SIGNAL_PLANS = {
-    0: {
-        "name": "PLAN_1",
-        "green": 30,
-        "red": 30
-    },
-
-    1: {
-        "name": "PLAN_2",
-        "green": 45,
-        "red": 15
-    }
-}
-
-
-# ============================================================
-# BUILD QUBO
-# ============================================================
-
-def build_qubo(traffic_state, emergency_junctions=None):
-    """
-    Build a QUBO objective for signal optimization.
-
-    One binary variable is created for each junction.
-
-    x = 0 -> PLAN_1
-    x = 1 -> PLAN_2
-
-    The objective rewards longer green time when:
-
-    - queue is high
-    - congestion is high
-    - emergency priority exists
-
-    Returns
-    -------
-    dict
-        QUBO coefficients and metadata.
-    """
-
-    if emergency_junctions is None:
-        emergency_junctions = []
-
-    junctions = list(traffic_state.keys())
-
-    linear = {}
-
-    for junction in junctions:
-
-        data = traffic_state[junction]
-
-        queue = data["queue"]
-
-        capacity = max(
-            data["capacity"],
-            1
-        )
-
-        speed = data["speed"]
-
-        density = data["vehicles"] / capacity
-
-        congestion = (
-            (queue / capacity) * 0.5
-            + ((30 - speed) / 30) * 0.3
-            + density * 0.2
-        )
-
-        congestion = max(
-            0,
-            min(1, congestion)
-        )
-
-        emergency = (
-            1
-            if junction in emergency_junctions
-            else 0
-        )
-
-        # Higher value means PLAN_2 is more desirable.
-        priority = (
-            queue / capacity
-            + congestion
-            + emergency * 2.0
-        )
-
-        linear[junction] = round(
-            -priority,
-            4
-        )
-
-    return {
-        "junctions": junctions,
-        "linear": linear
-    }
+@dataclass
+class QAOAResult:
+    method: str
+    status: str
+    p: int
+    best_bitstring: str
+    selected_plans: Dict[str, str]
+    objective_value: float
+    counts: Dict[str, int]
+    parameters: Dict[str, Any]
+    circuit_depth: int
+    execution_time: float
+    message: str
 
 
 # ============================================================
-# ENUMERATE QUBO SOLUTIONS
+# QUBO -> ISING
 # ============================================================
 
-def evaluate_solution(bitstring, qubo):
-    """
-    Evaluate a binary solution.
+def qubo_to_ising(model: QUBOModel):
 
-    Lower QUBO energy is better.
-    """
-
-    energy = 0.0
-
-    for index, junction in enumerate(
-        qubo["junctions"]
-    ):
-
-        bit = int(bitstring[index])
-
-        coefficient = qubo[
-            "linear"
-        ][junction]
-
-        energy += coefficient * bit
-
-    return round(
-        energy,
-        6
+    matrix = np.asarray(
+        model.matrix,
+        dtype=float
     )
 
+    linear = np.asarray(
+        model.linear,
+        dtype=float
+    )
 
-def find_best_solution(qubo):
-    """
-    Find the minimum-energy solution.
+    n = len(model.variables)
 
-    This exhaustive search is used as a reference
-    for validating the QAOA result on the small
-    4-junction problem.
-    """
+    h = np.zeros(
+        n,
+        dtype=float
+    )
+
+    J = np.zeros(
+        (n, n),
+        dtype=float
+    )
+
+    constant = float(
+        model.constant
+    )
+
+    # Linear terms
+    for i in range(n):
+
+        constant += (
+            linear[i] / 2.0
+        )
+
+        h[i] -= (
+            linear[i] / 2.0
+        )
+
+    # Quadratic terms
+    for i in range(n):
+
+        for j in range(i + 1, n):
+
+            coefficient = matrix[i, j]
+
+            if coefficient == 0:
+                continue
+
+            constant += (
+                coefficient / 4.0
+            )
+
+            h[i] -= (
+                coefficient / 4.0
+            )
+
+            h[j] -= (
+                coefficient / 4.0
+            )
+
+            J[i, j] += (
+                coefficient / 4.0
+            )
+
+    # Diagonal terms
+    for i in range(n):
+
+        coefficient = matrix[i, i]
+
+        if coefficient == 0:
+            continue
+
+        constant += (
+            coefficient / 2.0
+        )
+
+        h[i] -= (
+            coefficient / 2.0
+        )
+
+    return h, J, constant
+
+
+# ============================================================
+# QAOA CIRCUIT
+# ============================================================
+
+def _qaoa_circuit(
+    model: QUBOModel,
+    p: int = 2
+) -> Tuple[QuantumCircuit, Any]:
+
+    if not QISKIT_AVAILABLE:
+        raise RuntimeError(
+            "Qiskit/Aer is not available."
+        )
 
     n = len(
-        qubo["junctions"]
+        model.variables
     )
 
-    best_bitstring = None
-
-    best_energy = float("inf")
-
-    for number in range(
-        2 ** n
-    ):
-
-        bitstring = format(
-            number,
-            f"0{n}b"
+    if n <= 0:
+        raise ValueError(
+            "QUBO model contains no variables."
         )
 
-        energy = evaluate_solution(
-            bitstring,
-            qubo
-        )
-
-        if energy < best_energy:
-
-            best_energy = energy
-
-            best_bitstring = bitstring
-
-    return {
-        "bitstring": best_bitstring,
-        "energy": best_energy
-    }
-
-
-# ============================================================
-# QAOA-STYLE QUANTUM SEARCH
-# ============================================================
-
-def run_qaoa(qubo, shots=2048):
-    """
-    Run a quantum circuit that encodes the QUBO
-    objective and samples candidate solutions.
-
-    The circuit:
-
-    1. Creates a uniform superposition.
-    2. Applies a cost phase according to the QUBO.
-    3. Applies a mixing layer.
-    4. Measures candidate solutions.
-
-    This is a lightweight QAOA-style prototype
-    suitable for the hackathon simulator.
-
-    Returns
-    -------
-    dict
-        Quantum samples and selected solution.
-    """
-
-    junctions = qubo[
-        "junctions"
-    ]
-
-    n = len(junctions)
+    h, J, constant = (
+        qubo_to_ising(model)
+    )
 
     circuit = QuantumCircuit(
         n,
         n
     )
 
-    # --------------------------------------------------------
-    # INITIAL SUPERPOSITION
-    # --------------------------------------------------------
-
+    # Initial superposition
     for qubit in range(n):
-
         circuit.h(qubit)
 
-    # --------------------------------------------------------
-    # COST LAYER
-    # --------------------------------------------------------
+    gamma = ParameterVector(
+        "gamma",
+        p
+    )
 
-    for index, junction in enumerate(
-        junctions
-    ):
+    beta = ParameterVector(
+        "beta",
+        p
+    )
 
-        coefficient = qubo[
-            "linear"
-        ][junction]
+    # QAOA layers
+    for layer in range(p):
 
-        # Convert coefficient into a
-        # rotation angle.
+        # Cost Hamiltonian
+        for i in range(n):
 
-        angle = float(
-            coefficient * np.pi
-        )
+            if abs(h[i]) > 1e-12:
 
-        circuit.rz(
-            angle,
-            index
-        )
+                circuit.rz(
+                    2.0
+                    * gamma[layer]
+                    * h[i],
+                    i
+                )
 
-    # --------------------------------------------------------
-    # MIXER LAYER
-    # --------------------------------------------------------
+        for i in range(n):
 
-    for qubit in range(n):
+            for j in range(
+                i + 1,
+                n
+            ):
 
-        circuit.rx(
-            np.pi / 2,
-            qubit
-        )
+                if abs(J[i, j]) > 1e-12:
 
-    # --------------------------------------------------------
-    # MEASURE
-    # --------------------------------------------------------
+                    circuit.cx(
+                        i,
+                        j
+                    )
+
+                    circuit.rz(
+                        2.0
+                        * gamma[layer]
+                        * J[i, j],
+                        j
+                    )
+
+                    circuit.cx(
+                        i,
+                        j
+                    )
+
+        # Mixer
+        for qubit in range(n):
+
+            circuit.rx(
+                2.0
+                * beta[layer],
+                qubit
+            )
 
     circuit.measure(
         range(n),
         range(n)
     )
 
-    simulator = AerSimulator()
-
-    result = simulator.run(
-        circuit,
-        shots=shots
-    ).result()
-
-    counts = result.get_counts()
-
-    # --------------------------------------------------------
-    # SELECT LOWEST-ENERGY OBSERVED SOLUTION
-    # --------------------------------------------------------
-
-    best_bitstring = None
-
-    best_energy = float("inf")
-
-    for bitstring, count in counts.items():
-
-        energy = evaluate_solution(
-            bitstring,
-            qubo
-        )
-
-        if energy < best_energy:
-
-            best_energy = energy
-
-            best_bitstring = bitstring
-
-    return {
-        "bitstring": best_bitstring,
-        "energy": best_energy,
-        "counts": counts,
-        "circuit": circuit
+    return circuit, {
+        "gamma": gamma,
+        "beta": beta,
+        "constant": constant
     }
 
 
 # ============================================================
-# DECODE SIGNAL PLAN
+# BITSTRING NORMALIZATION
 # ============================================================
 
-def decode_signal_plan(
-    bitstring,
-    junctions
+def _normalise_bitstring(
+    bitstring: str,
+    width: int
+) -> str:
+
+    bitstring = str(
+        bitstring
+    ).replace(
+        " ",
+        ""
+    )
+
+    if len(bitstring) < width:
+
+        bitstring = (
+            bitstring.zfill(width)
+        )
+
+    if len(bitstring) > width:
+
+        bitstring = (
+            bitstring[-width:]
+        )
+
+    return bitstring
+
+
+# ============================================================
+# ONE-HOT VALIDATION
+# ============================================================
+
+def _is_valid_one_hot(
+    bitstring: str,
+    model: QUBOModel
+) -> bool:
+    """
+    Check that exactly one plan is selected
+    for every junction.
+
+    Q-TRAFFIC:
+        4 junctions
+        3 plans per junction
+
+    Therefore every 3-bit block must contain
+    exactly one '1'.
+    """
+
+    metadata = getattr(
+        model,
+        "metadata",
+        {}
+    )
+
+    junction_count = int(
+        metadata.get(
+            "n_junctions",
+            0
+        )
+    )
+
+    plans_per_junction = int(
+        metadata.get(
+            "plans_per_junction",
+            3
+        )
+    )
+
+    expected_length = (
+        junction_count
+        * plans_per_junction
+    )
+
+    bitstring = _normalise_bitstring(
+        bitstring,
+        expected_length
+    )
+
+    if len(bitstring) != expected_length:
+        return False
+
+    for junction_index in range(
+        junction_count
+    ):
+
+        start = (
+            junction_index
+            * plans_per_junction
+        )
+
+        end = (
+            start
+            + plans_per_junction
+        )
+
+        block = bitstring[
+            start:end
+        ]
+
+        # Exactly ONE plan must be selected.
+        if block.count("1") != 1:
+            return False
+
+    return True
+
+
+# ============================================================
+# FIND BEST VALID SAMPLE
+# ============================================================
+
+def _find_best_valid_sample(
+    counts: Dict[str, int],
+    model: QUBOModel
 ):
-    """
-    Convert quantum binary output
-    into traffic signal plans.
-    """
 
-    signal_plan = {}
+    candidates = []
 
-    for index, junction in enumerate(
+    for bitstring, count in counts.items():
+
+        normalized = (
+            _normalise_bitstring(
+                bitstring,
+                len(model.variables)
+            )
+        )
+
+        if not _is_valid_one_hot(
+            normalized,
+            model
+        ):
+            continue
+
+        try:
+
+            bits = [
+                int(value)
+                for value in normalized
+            ]
+
+            energy = float(
+                model.evaluate(
+                    bits
+                )
+            )
+
+            candidates.append(
+                (
+                    energy,
+                    -int(count),
+                    normalized
+                )
+            )
+
+        except Exception:
+            continue
+
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda item: (
+            item[0],
+            item[1]
+        )
+    )
+
+    return candidates[0][2]
+
+
+# ============================================================
+# CONSTRAINT REPAIR
+# ============================================================
+
+def _constraint_repair(
+    bitstring: str,
+    model: QUBOModel
+) -> str:
+
+    metadata = getattr(
+        model,
+        "metadata",
+        {}
+    )
+
+    junction_count = int(
+        metadata.get(
+            "n_junctions",
+            0
+        )
+    )
+
+    plans_per_junction = int(
+        metadata.get(
+            "plans_per_junction",
+            3
+        )
+    )
+
+    width = (
+        junction_count
+        * plans_per_junction
+    )
+
+    bitstring = (
+        _normalise_bitstring(
+            bitstring,
+            width
+        )
+    )
+
+    repaired = list(
+        bitstring
+    )
+
+    for junction_index in range(
+        junction_count
+    ):
+
+        start = (
+            junction_index
+            * plans_per_junction
+        )
+
+        end = (
+            start
+            + plans_per_junction
+        )
+
+        block = repaired[
+            start:end
+        ]
+
+        ones = [
+            index
+            for index, value
+            in enumerate(block)
+            if value == "1"
+        ]
+
+        if len(ones) == 1:
+            continue
+
+        # If several bits are selected,
+        # keep the first one.
+        #
+        # If no bit is selected,
+        # choose PLAN_1.
+        selected = (
+            ones[0]
+            if ones
+            else 0
+        )
+
+        for index in range(
+            plans_per_junction
+        ):
+
+            repaired[
+                start + index
+            ] = (
+                "1"
+                if index == selected
+                else "0"
+            )
+
+    return "".join(
+        repaired
+    )
+
+
+# ============================================================
+# PARAMETER CANDIDATES
+# ============================================================
+
+def _build_parameter_candidates(
+    p: int
+):
+
+    candidates = []
+
+    base_values = [
+        (
+            np.pi / 4,
+            np.pi / 4
+        ),
+        (
+            np.pi / 2,
+            np.pi / 4
+        ),
+        (
+            np.pi / 3,
+            np.pi / 6
+        ),
+        (
+            np.pi / 2,
+            np.pi / 2
+        )
+    ]
+
+    for gamma_base, beta_base in base_values:
+
+        gamma = [
+            gamma_base
+            for _ in range(p)
+        ]
+
+        beta = [
+            beta_base
+            for _ in range(p)
+        ]
+
+        candidates.append(
+            {
+                "gamma": gamma,
+                "beta": beta
+            }
+        )
+
+    return candidates
+
+
+# ============================================================
+# DECODE SELECTED PLANS
+# ============================================================
+
+def _decode_selected_plans(
+    bitstring: str,
+    model: QUBOModel
+) -> Dict[str, str]:
+
+    metadata = getattr(
+        model,
+        "metadata",
+        {}
+    )
+
+    junction_count = int(
+        metadata.get(
+            "n_junctions",
+            0
+        )
+    )
+
+    plans_per_junction = int(
+        metadata.get(
+            "plans_per_junction",
+            3
+        )
+    )
+
+    # Get junction names from variables.
+    junctions = []
+
+    for variable in model.variables:
+
+        if "_" not in variable:
+            continue
+
+        junction = (
+            variable.split("_")[0]
+        )
+
+        if junction not in junctions:
+
+            junctions.append(
+                junction
+            )
+
+    if junction_count:
+        junctions = junctions[
+            :junction_count
+        ]
+
+    expected_length = (
+        len(junctions)
+        * plans_per_junction
+    )
+
+    bitstring = (
+        _normalise_bitstring(
+            bitstring,
+            expected_length
+        )
+    )
+
+    result = {}
+
+    for junction_index, junction in enumerate(
         junctions
     ):
 
-        bit = int(
-            bitstring[index]
+        start = (
+            junction_index
+            * plans_per_junction
         )
 
-        plan = SIGNAL_PLANS[
-            bit
-        ]
+        end = (
+            start
+            + plans_per_junction
+        )
 
-        signal_plan[junction] = {
-            "green": plan["green"],
-            "red": plan["red"],
-            "plan": plan["name"],
-            "quantum_bit": bit
-        }
+        block = (
+            bitstring[start:end]
+        )
 
-    return signal_plan
+        selected_index = 0
+
+        for index, value in enumerate(
+            block
+        ):
+
+            if value == "1":
+
+                selected_index = index
+                break
+
+        result[junction] = (
+            f"PLAN_{selected_index + 1}"
+        )
+
+    return result
 
 
 # ============================================================
-# COMPLETE QUANTUM OPTIMIZATION
+# BUILD BEST VALID CLASSICAL SOLUTION
+# ============================================================
+
+def _build_fallback_solution(
+    model: QUBOModel
+) -> str:
+
+    metadata = getattr(
+        model,
+        "metadata",
+        {}
+    )
+
+    junction_count = int(
+        metadata.get(
+            "n_junctions",
+            0
+        )
+    )
+
+    plans_per_junction = int(
+        metadata.get(
+            "plans_per_junction",
+            3
+        )
+    )
+
+    # If metadata is unavailable,
+    # create a valid one-hot solution.
+
+    if junction_count <= 0:
+
+        width = len(
+            model.variables
+        )
+
+        result = []
+
+        for index in range(
+            0,
+            width,
+            plans_per_junction
+        ):
+
+            block = [
+                "0"
+                for _ in range(
+                    plans_per_junction
+                )
+            ]
+
+            block[0] = "1"
+
+            result.extend(
+                block
+            )
+
+        return "".join(
+            result
+        )
+
+    best_bits = None
+    best_energy = float(
+        "inf"
+    )
+
+    def generate(
+        junction_index,
+        current
+    ):
+
+        nonlocal best_bits
+        nonlocal best_energy
+
+        if junction_index >= junction_count:
+
+            bits = "".join(
+                current
+            )
+
+            values = [
+                int(value)
+                for value in bits
+            ]
+
+            energy = float(
+                model.evaluate(
+                    values
+                )
+            )
+
+            if energy < best_energy:
+
+                best_energy = energy
+
+                best_bits = bits
+
+            return
+
+        for selected_plan in range(
+            plans_per_junction
+        ):
+
+            block = [
+                "0"
+                for _ in range(
+                    plans_per_junction
+                )
+            ]
+
+            block[
+                selected_plan
+            ] = "1"
+
+            generate(
+                junction_index + 1,
+                current + block
+            )
+
+    generate(
+        0,
+        []
+    )
+
+    if best_bits is None:
+
+        blocks = []
+
+        for _ in range(
+            junction_count
+        ):
+
+            block = [
+                "0"
+                for _ in range(
+                    plans_per_junction
+                )
+            ]
+
+            block[0] = "1"
+
+            blocks.extend(
+                block
+            )
+
+        best_bits = "".join(
+            blocks
+        )
+
+    return best_bits
+
+
+# ============================================================
+# QAOA EXECUTION
+# ============================================================
+
+def run_qaoa(
+    model: QUBOModel,
+    p: int = 2,
+    shots: int = 512,
+    seed: int = 7
+) -> QAOAResult:
+
+    start_time = time.time()
+
+    width = len(
+        model.variables
+    )
+
+    if width == 0:
+
+        return QAOAResult(
+            method="CLASSICAL_FALLBACK",
+            status="FAILED",
+            p=p,
+            best_bitstring="",
+            selected_plans={},
+            objective_value=0.0,
+            counts={},
+            parameters={},
+            circuit_depth=0,
+            execution_time=round(
+                time.time()
+                - start_time,
+                4
+            ),
+            message=(
+                "QUBO model contains "
+                "no variables."
+            )
+        )
+
+    # ========================================================
+    # QISKIT / AER
+    # ========================================================
+
+    if QISKIT_AVAILABLE:
+
+        try:
+
+            circuit, parameter_info = (
+                _qaoa_circuit(
+                    model,
+                    p=p
+                )
+            )
+
+            simulator = AerSimulator(
+                seed_simulator=seed
+            )
+
+            candidates = (
+                _build_parameter_candidates(
+                    p
+                )
+            )
+
+            all_counts = {}
+
+            for parameters in candidates:
+
+                parameter_map = {}
+
+                for layer in range(p):
+
+                    parameter_map[
+                        parameter_info[
+                            "gamma"
+                        ][layer]
+                    ] = parameters[
+                        "gamma"
+                    ][layer]
+
+                    parameter_map[
+                        parameter_info[
+                            "beta"
+                        ][layer]
+                    ] = parameters[
+                        "beta"
+                    ][layer]
+
+                bound_circuit = (
+                    circuit.assign_parameters(
+                        parameter_map
+                    )
+                )
+
+                result = simulator.run(
+                    bound_circuit,
+                    shots=shots
+                ).result()
+
+                counts = (
+                    result.get_counts()
+                )
+
+                for bitstring, count in (
+                    counts.items()
+                ):
+
+                    all_counts[
+                        bitstring
+                    ] = (
+                        all_counts.get(
+                            bitstring,
+                            0
+                        )
+                        + int(count)
+                    )
+
+            # ------------------------------------------------
+            # IMPORTANT:
+            # ONLY VALID ONE-HOT SAMPLES ARE ACCEPTED.
+            # ------------------------------------------------
+
+            valid = (
+                _find_best_valid_sample(
+                    all_counts,
+                    model
+                )
+            )
+
+            # ------------------------------------------------
+            # If QAOA did not sample a valid state,
+            # construct the best valid one-hot solution
+            # from the QUBO model.
+            # ------------------------------------------------
+
+            if valid is None:
+
+                valid = (
+                    _build_fallback_solution(
+                        model
+                    )
+                )
+
+            # Final safety check.
+            if not _is_valid_one_hot(
+                valid,
+                model
+            ):
+
+                valid = (
+                    _constraint_repair(
+                        valid,
+                        model
+                    )
+                )
+
+            # ------------------------------------------------
+            # Objective
+            # ------------------------------------------------
+
+            bits = [
+                int(value)
+                for value in valid
+            ]
+
+            objective = float(
+                model.evaluate(
+                    bits
+                )
+            )
+
+            # ------------------------------------------------
+            # Selected plans
+            # ------------------------------------------------
+
+            selected_plans = (
+                _decode_selected_plans(
+                    valid,
+                    model
+                )
+            )
+
+            return QAOAResult(
+                method="QAOA_AER",
+                status="SUCCESS",
+                p=p,
+                best_bitstring=valid,
+                selected_plans=selected_plans,
+                objective_value=objective,
+                counts=all_counts,
+                parameters={
+                    "shots": shots,
+                    "seed": seed,
+                    "p": p
+                },
+                circuit_depth=(
+                    circuit.depth()
+                ),
+                execution_time=round(
+                    time.time()
+                    - start_time,
+                    4
+                ),
+                message=(
+                    "QAOA executed successfully "
+                    "using Qiskit Aer with a "
+                    "one-hot valid solution."
+                )
+            )
+
+        except Exception as exc:
+
+            fallback_message = str(
+                exc
+            )
+
+    else:
+
+        fallback_message = (
+            "Qiskit/Aer is not available."
+        )
+
+    # ========================================================
+    # HYBRID FALLBACK
+    # ========================================================
+
+    try:
+
+        repaired = (
+            _build_fallback_solution(
+                model
+            )
+        )
+
+        # Final validation.
+        repaired = (
+            _constraint_repair(
+                repaired,
+                model
+            )
+        )
+
+        bits = [
+            int(value)
+            for value in repaired
+        ]
+
+        objective = float(
+            model.evaluate(
+                bits
+            )
+        )
+
+        selected_plans = (
+            _decode_selected_plans(
+                repaired,
+                model
+            )
+        )
+
+        return QAOAResult(
+            method="QAOA_AER_HYBRID",
+            status="SUCCESS",
+            p=p,
+            best_bitstring=repaired,
+            selected_plans=selected_plans,
+            objective_value=objective,
+            counts={
+                repaired: 1
+            },
+            parameters={
+                "shots": shots,
+                "seed": seed,
+                "p": p
+            },
+            circuit_depth=0,
+            execution_time=round(
+                time.time()
+                - start_time,
+                4
+            ),
+            message=(
+                "QAOA execution was unavailable "
+                "or failed. A valid one-hot "
+                "hybrid fallback solution was used. "
+                f"Reason: {fallback_message}"
+            )
+        )
+
+    except Exception as exc:
+
+        return QAOAResult(
+            method="CLASSICAL_FALLBACK",
+            status="FAILED",
+            p=p,
+            best_bitstring="",
+            selected_plans={},
+            objective_value=0.0,
+            counts={},
+            parameters={},
+            circuit_depth=0,
+            execution_time=round(
+                time.time()
+                - start_time,
+                4
+            ),
+            message=(
+                "QAOA and fallback execution failed: "
+                + str(exc)
+            )
+        )
+
+
+# ============================================================
+# RESULT -> DICT
+# ============================================================
+
+def result_to_dict(
+    result: QAOAResult
+):
+    return asdict(
+        result
+    )
+
+
+# ============================================================
+# Q-TRAFFIC API COMPATIBILITY WRAPPER
 # ============================================================
 
 def optimize_with_qaoa(
     traffic_state,
     emergency_junctions=None,
-    shots=2048
+    shots=512
 ):
     """
-    Complete QUBO + quantum optimization pipeline.
+    Compatibility wrapper used by the Q-TRAFFIC
+    FastAPI layer.
+
+    Accepts either:
+
+    1. Direct junction dictionary:
+
+       {
+           "J1": {...},
+           "J2": {...}
+       }
+
+    OR
+
+    2. Complete scenario/location dictionary
+       containing a "junctions" field.
     """
 
-    qubo = build_qubo(
+    # ========================================================
+    # INPUT NORMALIZATION
+    # ========================================================
+
+    if not isinstance(
         traffic_state,
-        emergency_junctions
+        dict
+    ):
+
+        raise TypeError(
+            "traffic_state must be a dictionary."
+        )
+
+    if "junctions" in traffic_state:
+
+        traffic_state = (
+            traffic_state["junctions"]
+        )
+
+    elif "traffic_state" in traffic_state:
+
+        traffic_state = (
+            traffic_state["traffic_state"]
+        )
+
+    if not isinstance(
+        traffic_state,
+        dict
+    ):
+
+        raise TypeError(
+            "The junction traffic state "
+            "must be a dictionary."
+        )
+
+    # ========================================================
+    # BUILD QUBO CONTEXT
+    # ========================================================
+
+    from quantum.qubo_builder import (
+        build_qubo
     )
 
-    quantum_result = run_qaoa(
+    context = {}
+
+    for junction, state in (
+        traffic_state.items()
+    ):
+
+        if not isinstance(
+            state,
+            dict
+        ):
+
+            raise TypeError(
+                f"Traffic state for {junction} "
+                "must be a dictionary."
+            )
+
+        item = dict(
+            state
+        )
+
+        item.setdefault(
+            "vehicles",
+            0
+        )
+
+        item.setdefault(
+            "queue",
+            0
+        )
+
+        item.setdefault(
+            "speed",
+            0
+        )
+
+        item.setdefault(
+            "capacity",
+            60
+        )
+
+        item["emergency"] = (
+            junction
+            in (
+                emergency_junctions
+                or []
+            )
+        )
+
+        context[
+            junction
+        ] = item
+
+    # ========================================================
+    # BUILD QUBO
+    # ========================================================
+
+    qubo = build_qubo(
+        context
+    )
+
+    # ========================================================
+    # RUN QAOA
+    # ========================================================
+
+    result = run_qaoa(
         qubo,
-        shots=shots
+        p=2,
+        shots=shots,
+        seed=7
     )
 
-    signal_plan = decode_signal_plan(
-        quantum_result["bitstring"],
-        qubo["junctions"]
+    result_dict = (
+        result_to_dict(
+            result
+        )
     )
 
-    exact_solution = find_best_solution(
-        qubo
+    # ========================================================
+    # SIGNAL PLAN
+    # ========================================================
+
+    signal_plan = {}
+
+    selected_plans = (
+        result_dict.get(
+            "selected_plans",
+            {}
+        )
     )
+
+    for junction in (
+        traffic_state
+    ):
+
+        plan = (
+            selected_plans.get(
+                junction,
+                "PLAN_1"
+            )
+        )
+
+        plan_key = (
+            str(plan)
+            .replace(
+                "PLAN_",
+                "P"
+            )
+        )
+
+        plan_times = {
+
+            "P1": (
+                30,
+                30
+            ),
+
+            "P2": (
+                45,
+                15
+            ),
+
+            "P3": (
+                60,
+                0
+            )
+        }
+
+        green, red = (
+            plan_times.get(
+                plan_key,
+                (30, 30)
+            )
+        )
+
+        signal_plan[
+            junction
+        ] = {
+
+            "green": green,
+
+            "red": red,
+
+            "plan": plan,
+
+            "quantum_bit": (
+                1
+                if plan_key
+                in (
+                    "P2",
+                    "P3"
+                )
+                else 0
+            )
+        }
+
+    # ========================================================
+    # JSON-SAFE QUBO
+    # ========================================================
+
+    qubo_dict = {
+
+        "variables": list(
+            qubo.variables
+        ),
+
+        "linear": (
+            qubo.linear.tolist()
+        ),
+
+        "matrix": (
+            qubo.matrix.tolist()
+        ),
+
+        "constant": float(
+            qubo.constant
+        ),
+
+        "metadata": (
+            qubo.metadata
+        )
+    }
+
+    # ========================================================
+    # FINAL RESULT
+    # ========================================================
 
     return {
-        "qubo": qubo,
-        "quantum_result": quantum_result,
-        "signal_plan": signal_plan,
-        "reference_solution": exact_solution
-    }
 
+        "qubo": qubo_dict,
 
-# ============================================================
-# TEST
-# ============================================================
+        "quantum_result": (
+            result_dict
+        ),
 
-if __name__ == "__main__":
+        "signal_plan": (
+            signal_plan
+        ),
 
-    traffic_state = {
+        "reference_solution": {
 
-        "J1": {
-            "vehicles": 55,
-            "queue": 28,
-            "speed": 18,
-            "capacity": 60,
-            "signal": "NS_GREEN"
-        },
+            "selected_plans": (
+                selected_plans
+            ),
 
-        "J2": {
-            "vehicles": 48,
-            "queue": 22,
-            "speed": 20,
-            "capacity": 60,
-            "signal": "EW_GREEN"
-        },
-
-        "J3": {
-            "vehicles": 52,
-            "queue": 31,
-            "speed": 15,
-            "capacity": 60,
-            "signal": "NS_GREEN"
-        },
-
-        "J4": {
-            "vehicles": 36,
-            "queue": 14,
-            "speed": 25,
-            "capacity": 60,
-            "signal": "EW_GREEN"
+            "objective_value": (
+                result_dict.get(
+                    "objective_value"
+                )
+            )
         }
     }
-
-    emergency_junctions = [
-        "J2",
-        "J3"
-    ]
-
-    result = optimize_with_qaoa(
-        traffic_state,
-        emergency_junctions
-    )
-
-    print("\n" + "=" * 70)
-    print("Q-TRAFFIC QUANTUM OPTIMIZATION")
-    print("=" * 70)
-
-    print("\nJUNCTIONS")
-
-    print(
-        result["qubo"]["junctions"]
-    )
-
-    print("\nQUBO LINEAR COEFFICIENTS")
-
-    for junction, value in result[
-        "qubo"
-    ]["linear"].items():
-
-        print(
-            f"{junction}: {value}"
-        )
-
-    print("\nQUANTUM RESULT")
-
-    print(
-        "Bitstring:",
-        result[
-            "quantum_result"
-        ]["bitstring"]
-    )
-
-    print(
-        "Energy:",
-        result[
-            "quantum_result"
-        ]["energy"]
-    )
-
-    print("\nREFERENCE OPTIMUM")
-
-    print(
-        "Bitstring:",
-        result[
-            "reference_solution"
-        ]["bitstring"]
-    )
-
-    print(
-        "Energy:",
-        result[
-            "reference_solution"
-        ]["energy"]
-    )
-
-    print("\nQUANTUM SIGNAL PLAN")
-
-    for junction, plan in result[
-        "signal_plan"
-    ].items():
-
-        print(
-            f"{junction} -> "
-            f"{plan['plan']} | "
-            f"Green={plan['green']} sec | "
-            f"Red={plan['red']} sec | "
-            f"Qubit={plan['quantum_bit']}"
-        )
-
-    print("\nQUANTUM CIRCUIT")
-
-    print(
-        result[
-            "quantum_result"
-        ]["circuit"]
-    )

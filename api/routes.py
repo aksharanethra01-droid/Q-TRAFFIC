@@ -1,15 +1,15 @@
 from fastapi import APIRouter
-from pprint import pprint
 
 from api.schemas import (
     ScenarioRequest,
     PredictionRequest,
-    EmergencyRouteRequest
+    EmergencyRouteRequest,
 )
 
-from data.locations import get_location_scenario
 from data.scenarios import apply_scenario
-from prediction.congestion import predict_congestion
+
+# SHREE TRAFFIC PREDICTION INTEGRATION
+from integration.shree_prediction_adapter import predict_live_traffic
 
 from emergency.san_integration import run_san_emergency
 
@@ -22,18 +22,73 @@ from simulation import run_simulation
 
 router = APIRouter()
 
-# ---------------------------------------------------------
+
+# =========================================================
 # GLOBAL STATE
-# ---------------------------------------------------------
+# =========================================================
 
 audit_store = AuditBlockchain()
 
 latest_result = {}
 
 
-# ---------------------------------------------------------
-# HELPER: JSON-SAFE QAOA RESULT
-# ---------------------------------------------------------
+# =========================================================
+# SHREE PREDICTION HELPER
+# =========================================================
+
+def run_shree_prediction(traffic_state):
+    """
+    Run Shree's traffic prediction module on the current
+    junction traffic state.
+
+    Output:
+        {
+            "J1": {
+                "1min": ...,
+                "3min": ...,
+                "5min": ...
+            },
+            ...
+        }
+    """
+
+    return predict_live_traffic(
+        traffic_state,
+        demand_multiplier=1.0,
+    )
+
+
+def attach_shree_predictions(traffic_state):
+    """
+    Attach Shree's predictions directly to each junction.
+
+    This keeps the prediction information available to
+    downstream QAOA/QUBO and dashboard layers.
+    """
+
+    predictions = run_shree_prediction(traffic_state)
+
+    enriched_state = {}
+
+    for junction, state in traffic_state.items():
+
+        enriched_state[junction] = dict(state)
+
+        enriched_state[junction]["predicted"] = predictions.get(
+            junction,
+            {
+                "1min": 0,
+                "3min": 0,
+                "5min": 0,
+            },
+        )
+
+    return enriched_state, predictions
+
+
+# =========================================================
+# JSON-SAFE QAOA RESULT
+# =========================================================
 
 def qaoa_audit_summary(qaoa_result):
     """
@@ -43,13 +98,19 @@ def qaoa_audit_summary(qaoa_result):
     directly through FastAPI.
     """
 
-    quantum_result = qaoa_result.get("quantum_result", {})
+    quantum_result = qaoa_result.get(
+        "quantum_result",
+        {},
+    )
 
     return {
         "bitstring": quantum_result.get("bitstring"),
         "energy": quantum_result.get("energy"),
         "counts": quantum_result.get("counts"),
-        "signal_plan": qaoa_result.get("signal_plan", {})
+        "signal_plan": qaoa_result.get(
+            "signal_plan",
+            {},
+        ),
     }
 
 
@@ -58,26 +119,46 @@ def json_safe_qaoa_result(qaoa_result):
     Complete JSON-safe representation of the QAOA result.
     """
 
-    quantum_result = qaoa_result.get("quantum_result", {})
+    quantum_result = qaoa_result.get(
+        "quantum_result",
+        {},
+    )
 
     return {
-        "qubo": qaoa_result.get("qubo", {}),
+        "qubo": qaoa_result.get(
+            "qubo",
+            {},
+        ),
+
         "quantum_result": {
-            "bitstring": quantum_result.get("bitstring"),
-            "energy": quantum_result.get("energy"),
-            "counts": quantum_result.get("counts")
+            "bitstring": quantum_result.get(
+                "bitstring"
+            ),
+
+            "energy": quantum_result.get(
+                "energy"
+            ),
+
+            "counts": quantum_result.get(
+                "counts"
+            ),
         },
-        "signal_plan": qaoa_result.get("signal_plan", {}),
+
+        "signal_plan": qaoa_result.get(
+            "signal_plan",
+            {},
+        ),
+
         "reference_solution": qaoa_result.get(
             "reference_solution",
-            {}
-        )
+            {},
+        ),
     }
 
 
-# ---------------------------------------------------------
+# =========================================================
 # HEALTH
-# ---------------------------------------------------------
+# =========================================================
 
 @router.get("/health")
 def health():
@@ -87,13 +168,14 @@ def health():
         "service": "Q-TRAFFIC API",
         "san_integration": "enabled",
         "qaoa_integration": "enabled",
-        "audit_blockchain": "enabled"
+        "shree_prediction": "enabled",
+        "audit_blockchain": "enabled",
     }
 
 
-# ---------------------------------------------------------
+# =========================================================
 # LOCATIONS
-# ---------------------------------------------------------
+# =========================================================
 
 @router.get("/locations")
 def locations():
@@ -103,14 +185,14 @@ def locations():
             "Coimbatore",
             "Chennai",
             "Madurai",
-            "Salem"
+            "Salem",
         ]
     }
 
 
-# ---------------------------------------------------------
+# =========================================================
 # SCENARIOS
-# ---------------------------------------------------------
+# =========================================================
 
 @router.get("/scenarios")
 def scenarios():
@@ -122,46 +204,47 @@ def scenarios():
             "Textile Festival",
             "Accident",
             "Vehicle Obstruction",
-            "Ambulance Emergency"
+            "Ambulance Emergency",
         ]
     }
 
 
-# ---------------------------------------------------------
+# =========================================================
 # TRAFFIC PREDICTION
-# ---------------------------------------------------------
+# =========================================================
 
 @router.post("/traffic/prediction")
 def traffic_prediction(request: PredictionRequest):
 
-    traffic_state = get_location_scenario(
-        request.location
-    )
-
+    # apply_scenario expects the location name.
     scenario_result = apply_scenario(
-        traffic_state,
-        request.scenario
+        request.location,
+        request.scenario,
     )
 
-    predictions = predict_congestion(
-        scenario_result["junctions"]
+    traffic_state = scenario_result["junctions"]
+
+    # Run Shree's real prediction module.
+    predictions = run_shree_prediction(
+        traffic_state
     )
 
     return {
         "location": request.location,
         "scenario": request.scenario,
-        "predictions": predictions
+        "predictions": predictions,
+        "prediction_source": "Shree traffic prediction module",
     }
 
 
-# ---------------------------------------------------------
+# =========================================================
 # EMERGENCY ROUTE
-# ---------------------------------------------------------
+# =========================================================
 
 @router.post("/emergency/route")
 def emergency_route(request: EmergencyRouteRequest):
 
-    # Use San's real emergency integration
+    # Use San's real emergency integration.
     if (
         request.vehicle == "AMB01"
         and request.start == "J1"
@@ -173,76 +256,106 @@ def emergency_route(request: EmergencyRouteRequest):
         audit_block = audit_store.add_decision(
             decision_type="GREEN_CORRIDOR",
             scenario="Ambulance Emergency",
-            route=result.get("selected_route"),
-            signal_plan=result.get("junctions"),
-            metrics=result.get("fuel_co2_estimate")
+            route=result.get(
+                "selected_route"
+            ),
+            signal_plan=result.get(
+                "junctions"
+            ),
+            metrics=result.get(
+                "fuel_co2_estimate"
+            ),
         )
 
         return {
             "emergency": result,
             "audit": audit_block,
-            "audit_valid": audit_store.verify_chain()
+            "audit_valid": audit_store.verify_chain(),
         }
 
-    # Generic fallback
+    # Generic fallback.
     return {
         "vehicle": request.vehicle,
         "start": request.start,
         "destination": request.destination,
         "priority": request.priority,
-        "status": "ROUTE_REQUEST_RECEIVED"
+        "status": "ROUTE_REQUEST_RECEIVED",
     }
 
 
-# ---------------------------------------------------------
+# =========================================================
 # SIGNAL OPTIMIZATION
-# ---------------------------------------------------------
+# =========================================================
 
 @router.post("/signal/optimize")
 def signal_optimize(request: ScenarioRequest):
 
     scenario_result = apply_scenario(
-        get_location_scenario(request.location),
-        request.scenario
+        request.location,
+        request.scenario,
     )
 
     traffic_state = scenario_result["junctions"]
 
+    # Add Shree's prediction to the traffic state.
+    traffic_state, predictions = attach_shree_predictions(
+        traffic_state
+    )
+
     emergency_junctions = []
 
     if request.scenario == "Ambulance Emergency":
+
         emergency_junctions = [
             "J1",
             "J2",
             "J3",
-            "J4"
+            "J4",
         ]
+
+    # -----------------------------------------------------
+    # RUN NILA'S QAOA
+    # -----------------------------------------------------
 
     qaoa_result = optimize_with_qaoa(
         traffic_state,
-        emergency_junctions=emergency_junctions
+        emergency_junctions=emergency_junctions,
     )
 
-    # Audit only JSON-safe information
+    # -----------------------------------------------------
+    # AUDIT
+    # -----------------------------------------------------
+
     audit_block = audit_store.add_decision(
         decision_type="QAOA_SIGNAL_OPTIMIZATION",
         scenario=request.scenario,
-        signal_plan=qaoa_result.get("signal_plan"),
-        metrics=qaoa_audit_summary(qaoa_result)
+        signal_plan=qaoa_result.get(
+            "signal_plan"
+        ),
+        metrics=qaoa_audit_summary(
+            qaoa_result
+        ),
     )
 
     return {
         "location": request.location,
         "scenario": request.scenario,
-        "qaoa": json_safe_qaoa_result(qaoa_result),
+
+        "predictions": predictions,
+
+        "qaoa": json_safe_qaoa_result(
+            qaoa_result
+        ),
+
         "audit": audit_block,
-        "audit_valid": audit_store.verify_chain()
+
+        "audit_valid": audit_store.verify_chain(),
     }
 
 
-# ---------------------------------------------------------
+# =========================================================
 # COMPLETE SCENARIO RUN
-# ---------------------------------------------------------
+# =========================================================
 
 @router.post("/scenario/run")
 def scenario_run(request: ScenarioRequest):
@@ -255,15 +368,19 @@ def scenario_run(request: ScenarioRequest):
 
     simulation_result = run_simulation(
         request.location,
-        request.scenario
+        request.scenario,
     )
 
     # -----------------------------------------------------
-    # 2. TRAFFIC PREDICTION
+    # 2. SHREE TRAFFIC PREDICTION
     # -----------------------------------------------------
 
-    predictions = predict_congestion(
-        simulation_result["junctions"]
+    traffic_state = simulation_result["junctions"]
+
+    enriched_traffic_state, predictions = (
+        attach_shree_predictions(
+            traffic_state
+        )
     )
 
     # -----------------------------------------------------
@@ -280,21 +397,19 @@ def scenario_run(request: ScenarioRequest):
     # 4. PREPARE QAOA INPUT
     # -----------------------------------------------------
 
-    traffic_state = simulation_result["junctions"]
-
     emergency_junctions = []
 
     if emergency_result:
 
         selected_route = emergency_result.get(
             "selected_route",
-            []
+            [],
         )
 
         emergency_junctions = [
             junction
             for junction in selected_route
-            if junction in traffic_state
+            if junction in enriched_traffic_state
         ]
 
     # -----------------------------------------------------
@@ -302,8 +417,8 @@ def scenario_run(request: ScenarioRequest):
     # -----------------------------------------------------
 
     qaoa_result = optimize_with_qaoa(
-        traffic_state,
-        emergency_junctions=emergency_junctions
+        enriched_traffic_state,
+        emergency_junctions=emergency_junctions,
     )
 
     # -----------------------------------------------------
@@ -317,15 +432,20 @@ def scenario_run(request: ScenarioRequest):
     audit_block = audit_store.add_decision(
         decision_type="SCENARIO_OPTIMIZATION",
         scenario=request.scenario,
+
         route=(
-            emergency_result.get("selected_route")
+            emergency_result.get(
+                "selected_route"
+            )
             if emergency_result
             else None
         ),
+
         signal_plan=qaoa_result.get(
             "signal_plan"
         ),
-        metrics=qaoa_summary
+
+        metrics=qaoa_summary,
     )
 
     # -----------------------------------------------------
@@ -334,7 +454,7 @@ def scenario_run(request: ScenarioRequest):
 
     controllers = simulation_result.get(
         "controllers",
-        {}
+        {},
     )
 
     # -----------------------------------------------------
@@ -351,50 +471,67 @@ def scenario_run(request: ScenarioRequest):
             "scenario"
         ),
 
-        "junctions": simulation_result.get(
-            "junctions",
-            {}
-        ),
+        # Current traffic + Shree predictions.
+        "junctions": enriched_traffic_state,
 
         "event": simulation_result.get(
             "event"
         ),
 
+        # Shree prediction output.
         "predictions": predictions,
 
+        # San emergency output.
         "emergency": emergency_result,
 
+        # Existing simulation optimization input.
         "optimization_input": simulation_result.get(
             "optimization_input",
-            {}
+            {},
         ),
 
+        # QAOA result.
         "qaoa": json_safe_qaoa_result(
             qaoa_result
         ),
 
+        # Classical + hybrid controllers.
         "controllers": controllers,
 
+        # Metrics.
         "metrics": {
             name: controller.get(
                 "metrics",
-                {}
+                {},
             )
             for name, controller
             in controllers.items()
         },
 
+        # Audit.
         "audit": audit_block,
 
-        "audit_valid": audit_store.verify_chain()
+        "audit_valid": audit_store.verify_chain(),
+
+        # Integration information.
+        "integration": {
+            "shree_prediction": "connected",
+            "san_emergency": (
+                "connected"
+                if emergency_result
+                else "not_required"
+            ),
+            "nila_qaoa": "connected",
+            "audit": "connected",
+        },
     }
 
     return latest_result
 
 
-# ---------------------------------------------------------
+# =========================================================
 # DASHBOARD STATE
-# ---------------------------------------------------------
+# =========================================================
 
 @router.get("/dashboard/state")
 def dashboard_state():
@@ -403,15 +540,15 @@ def dashboard_state():
 
         return {
             "status": "no_simulation_run",
-            "message": "Run /scenario/run first."
+            "message": "Run /scenario/run first.",
         }
 
     return latest_result
 
 
-# ---------------------------------------------------------
+# =========================================================
 # METRICS
-# ---------------------------------------------------------
+# =========================================================
 
 @router.get("/metrics")
 def metrics():
@@ -420,35 +557,37 @@ def metrics():
 
         return {
             "status": "no_simulation_run",
-            "metrics": {}
+            "metrics": {},
         }
 
     controllers = latest_result.get(
         "controllers",
-        {}
+        {},
     )
 
     return {
         "location": latest_result.get(
             "location"
         ),
+
         "scenario": latest_result.get(
             "scenario"
         ),
+
         "metrics": {
             name: controller.get(
                 "metrics",
-                {}
+                {},
             )
             for name, controller
             in controllers.items()
-        }
+        },
     }
 
 
-# ---------------------------------------------------------
+# =========================================================
 # AUDIT
-# ---------------------------------------------------------
+# =========================================================
 
 @router.get("/audit")
 def audit():
@@ -458,22 +597,24 @@ def audit():
         "valid": audit_store.verify_chain(),
         "blocks": len(
             audit_store.get_chain()
-        )
+        ),
     }
 
 
-# ---------------------------------------------------------
+# =========================================================
 # ROOT
-# ---------------------------------------------------------
+# =========================================================
 
 @router.get("/")
 def root():
 
     return {
         "service": "Q-TRAFFIC",
+
         "description": (
             "Quantum-Enhanced Adaptive "
             "Urban Traffic Optimization"
         ),
-        "status": "running"
+
+        "status": "running",
     }
