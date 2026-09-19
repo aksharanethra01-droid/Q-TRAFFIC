@@ -1,3 +1,16 @@
+"""
+Q-TRAFFIC Traffic Performance Metrics
+
+Calculates common performance metrics for:
+- Fixed-Time control
+- Adaptive control
+- Quantum-Hybrid control
+
+The function does NOT generate or assume performance values.
+All values must come from an actual simulation/controller.
+"""
+
+
 def calculate_metrics(
     waiting_times,
     queues,
@@ -9,26 +22,43 @@ def calculate_metrics(
     """
     Calculate traffic performance metrics.
 
-    Parameters:
-        waiting_times: list of vehicle waiting times
-        queues: list of queue lengths
-        throughput: number of vehicles processed
-        emergency_travel_time: emergency vehicle travel time
-        fuel: fuel consumption
-        co2: CO2 emissions
+    Parameters
+    ----------
+    waiting_times : list
+        Waiting time values collected from the simulation.
+
+    queues : list
+        Queue lengths collected from junctions.
+
+    throughput : int/float
+        Number of vehicles successfully processed.
+
+    emergency_travel_time : float, optional
+        Emergency vehicle travel time.
+
+    fuel : float, optional
+        Fuel consumption.
+
+    co2 : float, optional
+        CO2 emissions.
+
+    Returns
+    -------
+    dict
+        Standardized traffic performance metrics.
     """
 
     # Average waiting time
     if waiting_times:
-        average_waiting = sum(waiting_times) / len(waiting_times)
+        average_waiting_time = sum(waiting_times) / len(waiting_times)
     else:
-        average_waiting = 0
+        average_waiting_time = 0.0
 
-    # Total queue
-    total_queue = sum(queues)
+    # Total queue across all junctions
+    total_queue = sum(queues) if queues else 0
 
-    metrics = {
-        "average_waiting_time": round(average_waiting, 2),
+    return {
+        "average_waiting_time": round(average_waiting_time, 2),
         "total_queue": total_queue,
         "throughput": throughput,
         "emergency_travel_time": emergency_travel_time,
@@ -36,27 +66,25 @@ def calculate_metrics(
         "co2": co2
     }
 
-    return metrics
 
+def validate_metrics(metrics):
+    """
+    Check whether a metrics dictionary contains
+    the required fields for comparison.
+    """
 
-if __name__ == "__main__":
+    required_fields = [
+        "average_waiting_time",
+        "total_queue",
+        "throughput"
+    ]
 
-    # Temporary test data.
-    # Later this will come from SUMO.
-    waiting_times = [20, 30, 15, 25, 10]
-    queues = [12, 20, 15, 8]
+    missing_fields = [
+        field for field in required_fields
+        if field not in metrics
+    ]
 
-    result = calculate_metrics(
-        waiting_times=waiting_times,
-        queues=queues,
-        throughput=100,
-        emergency_travel_time=85,
-        fuel=42.5,
-        co2=98.3
-    )
-
-    print("\nTRAFFIC PERFORMANCE METRICS")
-    print("--------------------------------")
-
-    for metric, value in result.items():
-        print(f"{metric}: {value}")
+    return {
+        "valid": len(missing_fields) == 0,
+        "missing_fields": missing_fields
+    }

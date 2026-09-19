@@ -4,10 +4,10 @@ def compare_results(classical_fixed, classical_adaptive, optimized):
     """
 
     approaches = {
-        "Fixed-Time": classical_fixed,
-        "Adaptive": classical_adaptive,
-        "Optimized": optimized
-    }
+    "Fixed-Time": classical_fixed,
+    "Adaptive": classical_adaptive,
+    "Quantum-Hybrid Prototype": optimized
+}
 
     print("\nTRAFFIC CONTROL COMPARISON")
     print("=" * 50)
