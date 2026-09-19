@@ -1,0 +1,12 @@
+numpy>=1.26,<3
+pandas>=2.0,<3
+networkx>=3.0,<4
+qiskit>=1.0,<3
+qiskit-aer>=0.13,<1
+qiskit-optimization>=0.6,<1
+qiskit-algorithms>=0.3,<1
+traci>=1.20
+streamlit>=1.35,<2
+plotly>=5.18,<7
+pytest>=8,<9
+edge-tts>=6.1,<8

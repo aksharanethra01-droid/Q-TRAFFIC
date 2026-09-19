@@ -1,0 +1,12 @@
+<edges>
+    <edge id="N0_J1" from="N0" to="J1" numLanes="2" speed="13.9"/>
+    <edge id="J1_J2" from="J1" to="J2" numLanes="2" speed="13.9"/>
+    <edge id="J2_J3" from="J2" to="J3" numLanes="2" speed="13.9"/>
+    <edge id="J3_J4" from="J3" to="J4" numLanes="2" speed="13.9"/>
+    <edge id="J4_N5" from="J4" to="N5" numLanes="2" speed="13.9"/>
+    <edge id="J1_N0" from="J1" to="N0" numLanes="1" speed="13.9"/>
+    <edge id="J2_J1" from="J2" to="J1" numLanes="1" speed="13.9"/>
+    <edge id="J3_J2" from="J3" to="J2" numLanes="1" speed="13.9"/>
+    <edge id="J4_J3" from="J4" to="J3" numLanes="1" speed="13.9"/>
+    <edge id="N5_J4" from="N5" to="J4" numLanes="1" speed="13.9"/>
+</edges>

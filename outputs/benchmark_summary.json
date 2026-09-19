@@ -1,0 +1,94 @@
+{
+  "benchmark": "Quantum QAOA vs Exact Classical QUBO",
+  "scenarios_tested": 3,
+  "successful_qaoa_runs": 3,
+  "average_objective_gap_percent": 15.0121,
+  "average_classical_time_seconds": 0.001221,
+  "average_qaoa_time_seconds": 3.785624,
+  "same_qubo_used": true,
+  "quantum_advantage_claimed": false,
+  "note": "QAOA and exact classical optimization were evaluated on the same QUBO scenarios. Results are measured experimentally; no quantum advantage is assumed.",
+  "scenarios": [
+    {
+      "scenario": "NORMAL",
+      "classical_method": "EXACT_CLASSICAL_QUBO",
+      "quantum_method": "QAOA_AER",
+      "classical_objective": 796.078378,
+      "qaoa_objective": 923.873136,
+      "objective_gap_percent": 16.053,
+      "classical_time_seconds": 0.000945,
+      "qaoa_time_seconds": 4.538931,
+      "qaoa_circuit_execution_time": 4.538891,
+      "qaoa_status": "SUCCESS",
+      "qaoa_depth": 2,
+      "exact_objective_match": false,
+      "classical_plans": {
+        "J1": "PLAN_1",
+        "J2": "PLAN_1",
+        "J3": "PLAN_1",
+        "J4": "PLAN_1"
+      },
+      "qaoa_plans": {
+        "J1": "PLAN_3",
+        "J2": "PLAN_2",
+        "J3": "PLAN_2",
+        "J4": "PLAN_1"
+      },
+      "qaoa_bitstring": "001010010100"
+    },
+    {
+      "scenario": "PEAK",
+      "classical_method": "EXACT_CLASSICAL_QUBO",
+      "quantum_method": "QAOA_AER",
+      "classical_objective": 1000.461131,
+      "qaoa_objective": 1013.76969,
+      "objective_gap_percent": 1.3302,
+      "classical_time_seconds": 0.001355,
+      "qaoa_time_seconds": 3.55149,
+      "qaoa_circuit_execution_time": 3.551428,
+      "qaoa_status": "SUCCESS",
+      "qaoa_depth": 2,
+      "exact_objective_match": false,
+      "classical_plans": {
+        "J1": "PLAN_2",
+        "J2": "PLAN_3",
+        "J3": "PLAN_3",
+        "J4": "PLAN_2"
+      },
+      "qaoa_plans": {
+        "J1": "PLAN_3",
+        "J2": "PLAN_3",
+        "J3": "PLAN_2",
+        "J4": "PLAN_3"
+      },
+      "qaoa_bitstring": "001001010001"
+    },
+    {
+      "scenario": "ACCIDENT_EMERGENCY",
+      "classical_method": "EXACT_CLASSICAL_QUBO",
+      "quantum_method": "QAOA_AER",
+      "classical_objective": 1245.475526,
+      "qaoa_objective": 1589.889933,
+      "objective_gap_percent": 27.6532,
+      "classical_time_seconds": 0.001362,
+      "qaoa_time_seconds": 3.266452,
+      "qaoa_circuit_execution_time": 3.266407,
+      "qaoa_status": "SUCCESS",
+      "qaoa_depth": 2,
+      "exact_objective_match": false,
+      "classical_plans": {
+        "J1": "PLAN_3",
+        "J2": "PLAN_3",
+        "J3": "PLAN_3",
+        "J4": "PLAN_3"
+      },
+      "qaoa_plans": {
+        "J1": "PLAN_3",
+        "J2": "PLAN_3",
+        "J3": "PLAN_2",
+        "J4": "PLAN_3"
+      },
+      "qaoa_bitstring": "001001010001"
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+[
+  {
+    "time": 0,
+    "event": "NORMAL",
+    "plans": {
+      "J1": "PLAN_3",
+      "J2": "PLAN_3",
+      "J3": "PLAN_2",
+      "J4": "PLAN_3"
+    }
+  },
+  {
+    "time": 60,
+    "event": "SCHOOL_PEAK",
+    "plans": {
+      "J1": "PLAN_3",
+      "J2": "PLAN_3",
+      "J3": "PLAN_2",
+      "J4": "PLAN_3"
+    }
+  },
+  {
+    "time": 120,
+    "event": "TEXTILE_FESTIVAL",
+    "plans": {
+      "J1": "PLAN_3",
+      "J2": "PLAN_3",
+      "J3": "PLAN_2",
+      "J4": "PLAN_3"
+    }
+  },
+  {
+    "time": 180,
+    "event": "VEHICLE_OBSTRUCTION",
+    "plans": {
+      "J1": "PLAN_3",
+      "J2": "PLAN_3",
+      "J3": "PLAN_2",
+      "J4": "PLAN_3"
+    }
+  },
+  {
+    "time": 240,
+    "event": "ACCIDENT",
+    "plans": {
+      "J1": "PLAN_3",
+      "J2": "PLAN_3",
+      "J3": "PLAN_2",
+      "J4": "PLAN_3"
+    }
+  },
+  {
+    "time": 300,
+    "event": "AMBULANCE",
+    "plans": {
+      "J1": "PLAN_3",
+      "J2": "PLAN_3",
+      "J3": "PLAN_2",
+      "J4": "PLAN_3"
+    }
+  }
+]

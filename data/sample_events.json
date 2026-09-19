@@ -1,0 +1,46 @@
+[
+  {
+    "time": 0,
+    "type": "NORMAL",
+    "junction": null
+  },
+  {
+    "time": 60,
+    "type": "SCHOOL_PEAK",
+    "junction": "J1"
+  },
+  {
+    "time": 120,
+    "type": "TEXTILE_FESTIVAL",
+    "junction": "J2"
+  },
+  {
+    "time": 180,
+    "type": "VEHICLE_OBSTRUCTION",
+    "junction": "J2",
+    "vehicle_id": "TN38AB1234",
+    "model": "Sedan"
+  },
+  {
+    "time": 240,
+    "type": "ACCIDENT",
+    "junction": "J3"
+  },
+  {
+    "time": 300,
+    "type": "AMBULANCE",
+    "junction": "J1",
+    "vehicle_id": "AMB01",
+    "route": [
+      "J1",
+      "J2",
+      "J3",
+      "J4"
+    ]
+  },
+  {
+    "time": 360,
+    "type": "RECOVERY",
+    "junction": null
+  }
+]

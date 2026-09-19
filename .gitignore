@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.streamlit/
+outputs/*.csv
+outputs/*.json
+outputs/*.log
+*.egg-info/
+Nila_Quantum_Traffic_FINAL/
+sumo/inspect.*

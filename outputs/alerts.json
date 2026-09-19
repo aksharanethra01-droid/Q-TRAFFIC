@@ -1,0 +1,35 @@
+[
+  {
+    "event": "VEHICLE_OBSTRUCTION",
+    "location": "J2",
+    "vehicle_id": "TN38AB1234",
+    "vehicle_model": "Sedan",
+    "impact": "HIGH",
+    "ai_action": "Rolling optimization and coordinated signal control",
+    "english": "Vehicle TN38AB1234, Sedan, detected near J2 causing a lane obstruction. Traffic optimization has been triggered.",
+    "tamil": "J2 அருகே TN38AB1234 Sedan வாகனம் பாதை தடையை ஏற்படுத்துகிறது. போக்குவரத்து சிக்னல் மேம்படுத்தல் தொடங்கப்பட்டுள்ளது.",
+    "timestamp": "2026-09-19T12:09:37.955834+00:00"
+  },
+  {
+    "event": "ACCIDENT",
+    "location": "J3",
+    "vehicle_id": "",
+    "vehicle_model": "Unknown",
+    "impact": "CRITICAL",
+    "ai_action": "Rolling optimization and coordinated signal control",
+    "english": "Accident detected near J3. Traffic shock propagation and signal optimization have been triggered.",
+    "tamil": "J3 அருகே விபத்து கண்டறியப்பட்டுள்ளது. போக்குவரத்து தாக்கப் பரவல் மற்றும் சிக்னல் மேம்படுத்தல் தொடங்கப்பட்டுள்ளது.",
+    "timestamp": "2026-09-19T12:09:51.354702+00:00"
+  },
+  {
+    "event": "AMBULANCE",
+    "location": "J1",
+    "vehicle_id": "AMB01",
+    "vehicle_model": "Ambulance",
+    "impact": "LOW",
+    "ai_action": "Rolling optimization and coordinated signal control",
+    "english": "Ambulance AMB01 detected near J1. Emergency green-corridor assessment has been triggered.",
+    "tamil": "J1 அருகே ஆம்புலன்ஸ் AMB01 கண்டறியப்பட்டுள்ளது. அவசர பசுமை வழித்தட மதிப்பீடு தொடங்கப்பட்டுள்ளது.",
+    "timestamp": "2026-09-19T12:10:02.065248+00:00"
+  }
+]

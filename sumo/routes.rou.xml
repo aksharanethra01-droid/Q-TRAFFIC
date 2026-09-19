@@ -1,0 +1,9 @@
+<routes>
+  <vType id="car" accel="2.6" decel="4.5" sigma="0.5" length="5" minGap="2.5" maxSpeed="13.9"/>
+  <vType id="ambulance" accel="3.0" decel="5.0" sigma="0.2" length="5.5" minGap="2.0" maxSpeed="16.7" color="1,0,0"/>
+  <route id="main" edges="N0_J1 J1_J2 J2_J3 J3_J4 J4_N5"/>
+  <route id="reverse" edges="N5_J4 J4_J3 J3_J2 J2_J1 J1_N0"/>
+  <flow id="normal_forward" type="car" route="main" begin="0" end="600" vehsPerHour="480" departLane="best" departSpeed="max"/>
+  <flow id="normal_reverse" type="car" route="reverse" begin="0" end="600" vehsPerHour="120" departLane="best" departSpeed="max"/>
+  <vehicle id="AMB01" type="ambulance" route="main" depart="300" departLane="best" departSpeed="max"/>
+</routes>
