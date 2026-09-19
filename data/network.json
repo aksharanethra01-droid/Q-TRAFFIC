@@ -1,0 +1,1 @@
+{"nodes":["J1","J2","J3","J4","J5"],"example_emergency":{"vehicle":"AMB01","vehicle_type":"AMBULANCE","start":"J1","destination":"J5","priority":"HIGH"}}

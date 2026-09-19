@@ -1,0 +1,1 @@
+{"location":"Coimbatore","scenario":"TEXTILE_FESTIVAL","junctions":{"J1":{"vehicles":30,"queue":5,"speed":24,"capacity":60},"J2":{"vehicles":65,"queue":20,"speed":12,"capacity":60},"J3":{"vehicles":80,"queue":35,"speed":8,"capacity":60},"J4":{"vehicles":25,"queue":4,"speed":25,"capacity":60}}}
