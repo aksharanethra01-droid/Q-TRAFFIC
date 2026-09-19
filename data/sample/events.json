@@ -1,0 +1,24 @@
+{
+  "events": [
+    {
+      "type": "NORMAL",
+      "junction": null,
+      "severity": null
+    },
+    {
+      "type": "ACCIDENT",
+      "junction": "J3",
+      "severity": "HIGH"
+    },
+    {
+      "type": "ROAD_CLOSURE",
+      "junction": "J4",
+      "severity": "MEDIUM"
+    },
+    {
+      "type": "EMERGENCY",
+      "junction": "J2",
+      "severity": "HIGH"
+    }
+  ]
+}
