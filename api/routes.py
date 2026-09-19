@@ -119,32 +119,34 @@ def traffic_prediction(
 # ============================================================
 
 @router.post("/emergency/route")
-def emergency_route(
-    request: EmergencyRouteRequest
-):
-
+def emergency_route(request: EmergencyRouteRequest):
     try:
+        from emergency.san_integration import run_san_emergency
 
-        emergency_plan = build_emergency_plan(
-            vehicle=request.vehicle,
+        result = run_san_emergency(
+            vehicle_id=request.vehicle,
             start=request.start,
             destination=request.destination,
-            priority=request.priority
+            priority=request.priority,
         )
 
         return {
             "status": "success",
-            "emergency": emergency_plan
+            "source": "san_emergency_module",
+            "result": result,
         }
 
-    except Exception as e:
-
+    except ValueError as exc:
         raise HTTPException(
-            status_code=400,
-            detail=str(e)
+            status_code=404,
+            detail=str(exc),
         )
 
-
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Emergency routing integration failed: {exc}",
+        )
 # ============================================================
 # SIGNAL OPTIMIZATION
 # ============================================================
