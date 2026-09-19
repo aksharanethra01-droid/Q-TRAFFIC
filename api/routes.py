@@ -1,65 +1,99 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
+from pprint import pprint
 
 from api.schemas import (
     ScenarioRequest,
-    TrafficPredictionRequest,
-    EmergencyRouteRequest,
-    SignalOptimizationRequest
+    PredictionRequest,
+    EmergencyRouteRequest
 )
 
 from data.locations import get_location_scenario
-from data.scenarios import SCENARIOS, apply_scenario
-
+from data.scenarios import apply_scenario
 from prediction.congestion import predict_congestion
 
-from emergency.green_corridor import build_emergency_plan
+from emergency.san_integration import run_san_emergency
 
 from quantum.qaoa_optimizer import optimize_with_qaoa
 
-from simulation import (
-    simulate_controller,
-    apply_emergency_priority,
-    estimate_emergency_travel_time
-)
-
 from audit.blockchain import AuditBlockchain
 
+from simulation import run_simulation
 
-# ============================================================
-# ROUTER
-# ============================================================
 
 router = APIRouter()
 
-
-# ============================================================
-# AUDIT BLOCKCHAIN
-# ============================================================
-
-# Local in-memory SHA-256 audit chain.
-#
-# This is a lightweight tamper-evident audit mechanism.
-# It is NOT a decentralized blockchain network.
+# ---------------------------------------------------------
+# GLOBAL STATE
+# ---------------------------------------------------------
 
 audit_store = AuditBlockchain()
 
+latest_result = {}
 
-# ============================================================
+
+# ---------------------------------------------------------
+# HELPER: JSON-SAFE QAOA RESULT
+# ---------------------------------------------------------
+
+def qaoa_audit_summary(qaoa_result):
+    """
+    Convert the QAOA result into JSON-safe data.
+
+    Qiskit objects such as QuantumCircuit cannot be returned
+    directly through FastAPI.
+    """
+
+    quantum_result = qaoa_result.get("quantum_result", {})
+
+    return {
+        "bitstring": quantum_result.get("bitstring"),
+        "energy": quantum_result.get("energy"),
+        "counts": quantum_result.get("counts"),
+        "signal_plan": qaoa_result.get("signal_plan", {})
+    }
+
+
+def json_safe_qaoa_result(qaoa_result):
+    """
+    Complete JSON-safe representation of the QAOA result.
+    """
+
+    quantum_result = qaoa_result.get("quantum_result", {})
+
+    return {
+        "qubo": qaoa_result.get("qubo", {}),
+        "quantum_result": {
+            "bitstring": quantum_result.get("bitstring"),
+            "energy": quantum_result.get("energy"),
+            "counts": quantum_result.get("counts")
+        },
+        "signal_plan": qaoa_result.get("signal_plan", {}),
+        "reference_solution": qaoa_result.get(
+            "reference_solution",
+            {}
+        )
+    }
+
+
+# ---------------------------------------------------------
 # HEALTH
-# ============================================================
+# ---------------------------------------------------------
 
 @router.get("/health")
 def health():
 
     return {
-        "status": "ok",
-        "service": "Q-TRAFFIC API"
+        "status": "healthy",
+        "service": "Q-TRAFFIC API",
+        "san_integration": "enabled",
+        "qaoa_integration": "enabled",
+        "audit_blockchain": "enabled"
     }
 
 
-# ============================================================
+# ---------------------------------------------------------
 # LOCATIONS
-# ============================================================
+# ---------------------------------------------------------
 
 @router.get("/locations")
 def locations():
@@ -74,440 +108,372 @@ def locations():
     }
 
 
-# ============================================================
+# ---------------------------------------------------------
 # SCENARIOS
-# ============================================================
+# ---------------------------------------------------------
 
 @router.get("/scenarios")
 def scenarios():
 
     return {
-        "scenarios": SCENARIOS
+        "scenarios": [
+            "Normal Traffic",
+            "School Peak",
+            "Textile Festival",
+            "Accident",
+            "Vehicle Obstruction",
+            "Ambulance Emergency"
+        ]
     }
 
 
-# ============================================================
+# ---------------------------------------------------------
 # TRAFFIC PREDICTION
-# ============================================================
+# ---------------------------------------------------------
 
 @router.post("/traffic/prediction")
-def traffic_prediction(
-    request: TrafficPredictionRequest
-):
+def traffic_prediction(request: PredictionRequest):
 
-    try:
+    traffic_state = get_location_scenario(
+        request.location
+    )
 
-        prediction = predict_congestion(
-            request.traffic_state
-        )
+    scenario_result = apply_scenario(
+        traffic_state,
+        request.scenario
+    )
 
-        return {
-            "status": "success",
-            "prediction": prediction
-        }
+    predictions = predict_congestion(
+        scenario_result["junctions"]
+    )
 
-    except Exception as e:
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+    return {
+        "location": request.location,
+        "scenario": request.scenario,
+        "predictions": predictions
+    }
 
 
-# ============================================================
+# ---------------------------------------------------------
 # EMERGENCY ROUTE
-# ============================================================
+# ---------------------------------------------------------
 
 @router.post("/emergency/route")
 def emergency_route(request: EmergencyRouteRequest):
-    try:
-        from emergency.san_integration import run_san_emergency
 
-        result = run_san_emergency(
-            vehicle_id=request.vehicle,
-            start=request.start,
-            destination=request.destination,
-            priority=request.priority,
-        )
-
-        return {
-            "status": "success",
-            "source": "san_emergency_module",
-            "result": result,
-        }
-
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=404,
-            detail=str(exc),
-        )
-
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Emergency routing integration failed: {exc}",
-        )
-# ============================================================
-# SIGNAL OPTIMIZATION
-# ============================================================
-
-@router.post("/signal/optimize")
-def signal_optimize(
-    request: SignalOptimizationRequest
-):
-
-    try:
-
-        result = optimize_with_qaoa(
-            traffic_state=request.traffic_state,
-            emergency_junctions=request.emergency_junctions
-        )
-
-        return {
-            "status": "success",
-
-            "signal_plan":
-                result["signal_plan"],
-
-            "quantum_result": {
-
-                "bitstring":
-                    result["quantum_result"]["bitstring"],
-
-                "energy":
-                    result["quantum_result"]["energy"]
-            },
-
-            "reference_solution":
-                result["reference_solution"]
-        }
-
-    except Exception as e:
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
-
-# ============================================================
-# COMPLETE SCENARIO PIPELINE
-# ============================================================
-
-@router.post("/scenario/run")
-def scenario_run(
-    request: ScenarioRequest
-):
-
-    try:
-
-        # ----------------------------------------------------
-        # 1. APPLY SCENARIO
-        # ----------------------------------------------------
-
-        scenario_result = apply_scenario(
-            request.location,
-            request.scenario
-        )
-
-        junctions = scenario_result["junctions"]
-
-        event = scenario_result["event"]
-
-
-        # ----------------------------------------------------
-        # 2. TRAFFIC PREDICTION
-        # ----------------------------------------------------
-
-        predictions = predict_congestion(
-            junctions
-        )
-
-
-        # ----------------------------------------------------
-        # 3. EMERGENCY ROUTING
-        # ----------------------------------------------------
-
-        emergency_plan = None
-
-        if request.scenario == "Ambulance Emergency":
-
-            emergency_plan = build_emergency_plan(
-                vehicle="AMB01",
-                start="J1",
-                destination="J4",
-                priority="HIGH"
-            )
-
-
-        # ----------------------------------------------------
-        # 4. GET EMERGENCY JUNCTIONS
-        # ----------------------------------------------------
-
-        emergency_junctions = []
-
-        if emergency_plan is not None:
-
-            emergency_junctions = (
-                emergency_plan["route"]
-            )
-
-
-        # ----------------------------------------------------
-        # 5. QUBO / QAOA
-        # ----------------------------------------------------
-
-        quantum_result = optimize_with_qaoa(
-
-            traffic_state=junctions,
-
-            emergency_junctions=
-                emergency_junctions
-
-        )
-
-
-        # ----------------------------------------------------
-        # 6. GET QUANTUM SIGNAL PLAN
-        # ----------------------------------------------------
-
-        optimized_plan = (
-            quantum_result["signal_plan"]
-        )
-
-
-        # ----------------------------------------------------
-        # 7. APPLY EMERGENCY GREEN CORRIDOR
-        # ----------------------------------------------------
-
-        if emergency_plan is not None:
-
-            optimized_plan = (
-                apply_emergency_priority(
-                    optimized_plan,
-                    emergency_plan
-                )
-            )
-
-
-        # ----------------------------------------------------
-        # 8. RUN TRAFFIC SIMULATION
-        # ----------------------------------------------------
-
-        metrics = simulate_controller(
-
-            junctions,
-
-            optimized_plan
-
-        )
-
-
-        # ----------------------------------------------------
-        # 9. EMERGENCY TRAVEL TIME
-        # ----------------------------------------------------
-
-        emergency_travel_time = None
-
-        if emergency_plan is not None:
-
-            emergency_travel_time = (
-                estimate_emergency_travel_time(
-
-                    emergency_plan["route"],
-
-                    junctions,
-
-                    optimized_plan
-
-                )
-            )
-
-            metrics[
-                "emergency_travel_time"
-            ] = emergency_travel_time
-
-
-        # ----------------------------------------------------
-        # 10. ADD DECISION TO AUDIT BLOCKCHAIN
-        # ----------------------------------------------------
+    # Use San's real emergency integration
+    if (
+        request.vehicle == "AMB01"
+        and request.start == "J1"
+        and request.destination == "J5"
+    ):
+
+        result = run_san_emergency()
 
         audit_block = audit_store.add_decision(
-
-            decision_type=(
-                "GREEN_CORRIDOR"
-                if emergency_plan is not None
-                else "SIGNAL_OPTIMIZATION"
-            ),
-
-            scenario=request.scenario,
-
-            route=(
-                emergency_plan["route"]
-                if emergency_plan is not None
-                else None
-            ),
-
-            signal_plan=optimized_plan,
-
-            metrics=metrics
-
+            decision_type="GREEN_CORRIDOR",
+            scenario="Ambulance Emergency",
+            route=result.get("selected_route"),
+            signal_plan=result.get("junctions"),
+            metrics=result.get("fuel_co2_estimate")
         )
-
-
-        # ----------------------------------------------------
-        # 11. COMPLETE RESPONSE
-        # ----------------------------------------------------
 
         return {
-
-            "status": "success",
-
-            "location":
-                request.location,
-
-            "scenario":
-                request.scenario,
-
-            "event":
-                event,
-
-            "traffic_state":
-                junctions,
-
-            "prediction":
-                predictions,
-
-            "emergency":
-                emergency_plan,
-
-            "quantum": {
-
-                "bitstring":
-                    quantum_result[
-                        "quantum_result"
-                    ]["bitstring"],
-
-                "energy":
-                    quantum_result[
-                        "quantum_result"
-                    ]["energy"],
-
-                "reference_solution":
-                    quantum_result[
-                        "reference_solution"
-                    ]
-
-            },
-
-            "signal_plan":
-                optimized_plan,
-
-            "metrics":
-                metrics,
-
-            "audit": {
-
-                "block_index":
-                    audit_block["index"],
-
-                "hash":
-                    audit_block["hash"],
-
-                "previous_hash":
-                    audit_block["previous_hash"]
-
-            }
-
+            "emergency": result,
+            "audit": audit_block,
+            "audit_valid": audit_store.verify_chain()
         }
 
+    # Generic fallback
+    return {
+        "vehicle": request.vehicle,
+        "start": request.start,
+        "destination": request.destination,
+        "priority": request.priority,
+        "status": "ROUTE_REQUEST_RECEIVED"
+    }
 
-    except Exception as e:
 
-        raise HTTPException(
+# ---------------------------------------------------------
+# SIGNAL OPTIMIZATION
+# ---------------------------------------------------------
 
-            status_code=500,
+@router.post("/signal/optimize")
+def signal_optimize(request: ScenarioRequest):
 
-            detail=str(e)
+    scenario_result = apply_scenario(
+        get_location_scenario(request.location),
+        request.scenario
+    )
 
+    traffic_state = scenario_result["junctions"]
+
+    emergency_junctions = []
+
+    if request.scenario == "Ambulance Emergency":
+        emergency_junctions = [
+            "J1",
+            "J2",
+            "J3",
+            "J4"
+        ]
+
+    qaoa_result = optimize_with_qaoa(
+        traffic_state,
+        emergency_junctions=emergency_junctions
+    )
+
+    # Audit only JSON-safe information
+    audit_block = audit_store.add_decision(
+        decision_type="QAOA_SIGNAL_OPTIMIZATION",
+        scenario=request.scenario,
+        signal_plan=qaoa_result.get("signal_plan"),
+        metrics=qaoa_audit_summary(qaoa_result)
+    )
+
+    return {
+        "location": request.location,
+        "scenario": request.scenario,
+        "qaoa": json_safe_qaoa_result(qaoa_result),
+        "audit": audit_block,
+        "audit_valid": audit_store.verify_chain()
+    }
+
+
+# ---------------------------------------------------------
+# COMPLETE SCENARIO RUN
+# ---------------------------------------------------------
+
+@router.post("/scenario/run")
+def scenario_run(request: ScenarioRequest):
+
+    global latest_result
+
+    # -----------------------------------------------------
+    # 1. RUN CUSTOM TRAFFIC SIMULATION
+    # -----------------------------------------------------
+
+    simulation_result = run_simulation(
+        request.location,
+        request.scenario
+    )
+
+    # -----------------------------------------------------
+    # 2. TRAFFIC PREDICTION
+    # -----------------------------------------------------
+
+    predictions = predict_congestion(
+        simulation_result["junctions"]
+    )
+
+    # -----------------------------------------------------
+    # 3. EMERGENCY INTEGRATION
+    # -----------------------------------------------------
+
+    emergency_result = None
+
+    if request.scenario == "Ambulance Emergency":
+
+        emergency_result = run_san_emergency()
+
+    # -----------------------------------------------------
+    # 4. PREPARE QAOA INPUT
+    # -----------------------------------------------------
+
+    traffic_state = simulation_result["junctions"]
+
+    emergency_junctions = []
+
+    if emergency_result:
+
+        selected_route = emergency_result.get(
+            "selected_route",
+            []
         )
 
+        emergency_junctions = [
+            junction
+            for junction in selected_route
+            if junction in traffic_state
+        ]
 
-# ============================================================
+    # -----------------------------------------------------
+    # 5. RUN NILA'S QAOA
+    # -----------------------------------------------------
+
+    qaoa_result = optimize_with_qaoa(
+        traffic_state,
+        emergency_junctions=emergency_junctions
+    )
+
+    # -----------------------------------------------------
+    # 6. AUDIT QAOA DECISION
+    # -----------------------------------------------------
+
+    qaoa_summary = qaoa_audit_summary(
+        qaoa_result
+    )
+
+    audit_block = audit_store.add_decision(
+        decision_type="SCENARIO_OPTIMIZATION",
+        scenario=request.scenario,
+        route=(
+            emergency_result.get("selected_route")
+            if emergency_result
+            else None
+        ),
+        signal_plan=qaoa_result.get(
+            "signal_plan"
+        ),
+        metrics=qaoa_summary
+    )
+
+    # -----------------------------------------------------
+    # 7. JSON-SAFE CONTROLLERS
+    # -----------------------------------------------------
+
+    controllers = simulation_result.get(
+        "controllers",
+        {}
+    )
+
+    # -----------------------------------------------------
+    # 8. FINAL API RESULT
+    # -----------------------------------------------------
+
+    latest_result = {
+
+        "location": simulation_result.get(
+            "location"
+        ),
+
+        "scenario": simulation_result.get(
+            "scenario"
+        ),
+
+        "junctions": simulation_result.get(
+            "junctions",
+            {}
+        ),
+
+        "event": simulation_result.get(
+            "event"
+        ),
+
+        "predictions": predictions,
+
+        "emergency": emergency_result,
+
+        "optimization_input": simulation_result.get(
+            "optimization_input",
+            {}
+        ),
+
+        "qaoa": json_safe_qaoa_result(
+            qaoa_result
+        ),
+
+        "controllers": controllers,
+
+        "metrics": {
+            name: controller.get(
+                "metrics",
+                {}
+            )
+            for name, controller
+            in controllers.items()
+        },
+
+        "audit": audit_block,
+
+        "audit_valid": audit_store.verify_chain()
+    }
+
+    return latest_result
+
+
+# ---------------------------------------------------------
 # DASHBOARD STATE
-# ============================================================
+# ---------------------------------------------------------
 
 @router.get("/dashboard/state")
 def dashboard_state():
 
-    try:
-
-        result = apply_scenario(
-            "Coimbatore",
-            "Normal Traffic"
-        )
+    if not latest_result:
 
         return {
-
-            "status": "success",
-
-            "location":
-                result["location"],
-
-            "scenario":
-                result["scenario"],
-
-            "event":
-                result["event"],
-
-            "junctions":
-                result["junctions"]
-
+            "status": "no_simulation_run",
+            "message": "Run /scenario/run first."
         }
 
-    except Exception as e:
-
-        raise HTTPException(
-
-            status_code=500,
-
-            detail=str(e)
-
-        )
+    return latest_result
 
 
-# ============================================================
+# ---------------------------------------------------------
 # METRICS
-# ============================================================
+# ---------------------------------------------------------
 
 @router.get("/metrics")
 def metrics():
 
+    if not latest_result:
+
+        return {
+            "status": "no_simulation_run",
+            "metrics": {}
+        }
+
+    controllers = latest_result.get(
+        "controllers",
+        {}
+    )
+
     return {
-
-        "status": "success",
-
-        "message":
-            "Metrics are calculated during scenario execution."
-
+        "location": latest_result.get(
+            "location"
+        ),
+        "scenario": latest_result.get(
+            "scenario"
+        ),
+        "metrics": {
+            name: controller.get(
+                "metrics",
+                {}
+            )
+            for name, controller
+            in controllers.items()
+        }
     }
 
 
-# ============================================================
+# ---------------------------------------------------------
 # AUDIT
-# ============================================================
+# ---------------------------------------------------------
 
 @router.get("/audit")
 def audit():
 
     return {
-
-        "status": "success",
-
-        "chain_valid":
-            audit_store.verify_chain(),
-
-        "blocks":
+        "chain": audit_store.get_chain(),
+        "valid": audit_store.verify_chain(),
+        "blocks": len(
             audit_store.get_chain()
+        )
+    }
 
+
+# ---------------------------------------------------------
+# ROOT
+# ---------------------------------------------------------
+
+@router.get("/")
+def root():
+
+    return {
+        "service": "Q-TRAFFIC",
+        "description": (
+            "Quantum-Enhanced Adaptive "
+            "Urban Traffic Optimization"
+        ),
+        "status": "running"
     }
